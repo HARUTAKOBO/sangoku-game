@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>ヘックス陣取り大戦 - マス点滅・ターン制戦闘版</title>
+    <title>ヘックス陣取り大戦 - 洛陽攻城戦版</title>
     <style>
         html, body { background-color: #1e272e; color: #ecf0f1; font-family: sans-serif; margin: 0; padding: 0; height: 100vh; overflow: hidden; touch-action: none; overscroll-behavior: none; }
         
@@ -155,7 +155,7 @@
         resize();
         requestAnimationFrame(render);
         setInterval(gameTick, 1000);
-        logMsg(`武将${WARLORDS[type].name}として着任しました！`, "#f1c40f");
+        logMsg(`武将${WARLORDS[type].name}として着任しました！中央の洛陽を目指せ！`, "#f1c40f");
     }
 
     function generateMap() {
@@ -165,10 +165,21 @@
             let r2 = Math.min(MAP_RADIUS, -q + MAP_RADIUS);
             for (let r = r1; r <= r2; r++) {
                 const s = -q - r;
+                
+                // ★中央マスを「洛陽」として特別設定
+                if (q === 0 && r === 0 && s === 0) {
+                    hexes.set('0,0,0', { 
+                        q, r, s, team: 0, terrain: TERRAINS[0], isLuoyang: true,
+                        wallHP: 50000, maxWallHP: 50000,
+                        defenders: { spear: 5000, bow: 5000, shield: 5000, cav: 5000 } // NPC 20,000人
+                    });
+                    continue;
+                }
+
                 let t = TERRAINS[Math.floor(Math.random() * TERRAINS.length)];
                 if(Math.abs(q)===MAP_RADIUS || Math.abs(r)===MAP_RADIUS || Math.abs(s)===MAP_RADIUS) t = TERRAINS[0];
                 hexes.set(`${q},${r},${s}`, { 
-                    q, r, s, team: 0, terrain: t,
+                    q, r, s, team: 0, terrain: t, isLuoyang: false,
                     defenders: { spear: 10, bow: 10, shield: 10, cav: 10 }
                 });
             }
@@ -188,6 +199,7 @@
     function gameTick() {
         if (!gameActive) return;
 
+        // 兵力回復
         let regenTotal = (player.type === 'F') ? 11.6 : 8.3; 
         let regenPerType = regenTotal / 4;
         if (getTotalTroops() < player.maxTroops) {
@@ -204,6 +216,12 @@
             player.troops.shield += healPerType; player.troops.cav += healPerType;
         }
 
+        // ★洛陽の城壁自動回復処理 (3分=180秒で全回復、誰かが占領している場合のみ)
+        let luoyang = hexes.get("0,0,0");
+        if (luoyang && luoyang.team !== 0 && luoyang.wallHP < luoyang.maxWallHP) {
+            luoyang.wallHP = Math.min(luoyang.maxWallHP, luoyang.wallHP + (luoyang.maxWallHP / 180));
+        }
+
         updateUI();
 
         for (let i = marches.length - 1; i >= 0; i--) {
@@ -214,6 +232,32 @@
                 marches.splice(i, 1);
             }
         }
+
+        executeAI();
+    }
+
+    function executeAI() {
+        let aiTeams = [1,2,3,4,5,6].filter(t => t !== player.teamId);
+        aiTeams.forEach(t => {
+            if (Math.random() < 0.05) {
+                let myHexes = Array.from(hexes.values()).filter(h => h.team === t);
+                if (myHexes.length === 0) return;
+
+                let start = myHexes[Math.floor(Math.random() * myHexes.length)];
+                let neighbors = [[1,0,-1],[1,-1,0],[0,-1,1],[-1,0,1],[-1,1,0],[0,1,-1]]
+                                .map(d => `${start.q+d[0]},${start.r+d[1]},${start.s+d[2]}`);
+                let validTargets = neighbors.map(key => hexes.get(key)).filter(h => h && h.team !== t);
+
+                if (validTargets.length > 0) {
+                    let target = validTargets[Math.floor(Math.random() * validTargets.length)];
+                    let targetKey = `${target.q},${target.r},${target.s}`;
+                    if (marches.some(m => m.team === t && m.targetKey === targetKey)) return;
+
+                    let aiSent = { spear: 500, bow: 500, shield: 500, cav: 500 };
+                    marches.push({ team: t, targetKey: targetKey, troops: aiSent, turns: 5, timeLeft: 30 });
+                }
+            }
+        });
     }
 
     function resolveCombat(march) {
@@ -222,11 +266,12 @@
 
         let att = march.troops;
         let def = target.defenders;
+        let isPlayer = (march.team === player.teamId);
         
         let attPower = att.spear + att.bow + att.shield + att.cav;
         let defPower = def.spear + def.bow + def.shield + def.cav;
         
-        let typeMultiplier = (player.type === 'E') ? 1.4 : 1.2;
+        let typeMultiplier = (isPlayer && player.type === 'E') ? 1.4 : 1.2;
         if(att.spear > def.cav) attPower *= typeMultiplier;
         if(att.cav > def.shield) attPower *= typeMultiplier;
         if(att.shield > def.bow) attPower *= typeMultiplier;
@@ -240,17 +285,48 @@
 
         let totalSent = att.spear + att.bow + att.shield + att.cav;
 
+        // ★洛陽の城壁が存在する場合の攻城戦処理
+        if (target.isLuoyang && target.wallHP > 0) {
+            target.wallHP -= attPower;
+            if (target.wallHP <= 0) {
+                target.wallHP = 0;
+                if (isPlayer) logMsg(`【城門突破】洛陽の城壁を破壊した！次は内部の敵だ！`, "#f1c40f");
+            } else {
+                if (isPlayer) logMsg(`【攻城】洛陽の城壁に攻撃！(残りHP: ${Math.floor(target.wallHP)})`);
+            }
+            // 攻城戦の被害 (城壁にぶつかって部隊は消費される)
+            if (isPlayer) {
+                let survivalRate = (player.type === 'C') ? 0.4 : 0.2; // 慈悲武将は負傷兵が多く残る
+                player.wounded += Math.floor(totalSent * survivalRate);
+            }
+            return; // 城壁があるうちは、ここで戦闘終了
+        }
+
+        // 通常戦闘（または城壁崩壊後の洛陽戦）
         if (attPower > defPower) {
             let prevOwner = TEAMS[target.team].name;
             target.team = march.team;
-            target.defenders = { spear: 10, bow: 10, shield: 10, cav: 10 }; 
             
-            let loss = Math.floor((defPower / attPower) * totalSent);
-            player.wounded += loss;
-            logMsg(`【制圧】${march.turns}ターンの激戦の末、${prevOwner}のマスを奪取！`, "#2ecc71");
+            // 占領後の防衛兵セット
+            if (target.isLuoyang) {
+                target.defenders = { spear: 500, bow: 500, shield: 500, cav: 500 }; // 洛陽は防衛兵多め
+                if (isPlayer) logMsg(`【大願成就】洛陽を制圧しました！城壁の修復を開始します！`, "#f1c40f");
+                else logMsg(`【警告】洛陽が${TEAMS[march.team].name}に制圧されました！`, "#e74c3c");
+            } else {
+                target.defenders = { spear: 10, bow: 10, shield: 10, cav: 10 };
+                if (isPlayer) logMsg(`【制圧】${march.turns}ターンの激戦の末、${prevOwner}のマスを奪取！`, "#2ecc71");
+                else if (target.team === player.teamId) logMsg(`【警告】自軍のマスが${TEAMS[march.team].name}に奪われました！`, "#e74c3c");
+            }
+
+            if (isPlayer) {
+                let loss = Math.floor((defPower / attPower) * totalSent);
+                player.wounded += loss;
+            }
         } else {
-            if(player.type === 'C') player.wounded += Math.floor(totalSent * 0.2); 
-            logMsg(`【敗北】${march.turns}ターン耐えられず、攻撃失敗...`, "#e74c3c");
+            if (isPlayer) {
+                if(player.type === 'C') player.wounded += Math.floor(totalSent * 0.2); 
+                logMsg(`【敗北】${march.turns}ターン耐えられず、攻撃失敗...`, "#e74c3c");
+            }
         }
     }
 
@@ -278,7 +354,7 @@
             const canAttack = neighbors.some(nKey => hexes.get(nKey)?.team === player.teamId);
             
             if (canAttack) {
-                selectedTargetKey = key; // ここで選択中のマスを記憶
+                selectedTargetKey = key;
                 openPanel(target);
             }
         }
@@ -293,7 +369,14 @@
     function openPanel(hex) {
         document.getElementById('action-panel').style.display = 'block';
         let defCount = hex.defenders.spear + hex.defenders.bow + hex.defenders.shield + hex.defenders.cav;
-        document.getElementById('panel-info').innerText = `地形: ${hex.terrain.name}${hex.terrain.icon} / 予想防衛兵力: 約${defCount}人`;
+        
+        // ★パネルの情報表示を洛陽用に分岐
+        if (hex.isLuoyang) {
+            document.getElementById('panel-info').innerHTML = `<strong style="color:#f1c40f;">【洛陽 城壁】 HP: ${Math.floor(hex.wallHP)} / ${hex.maxWallHP}</strong><br>予想防衛兵力: 約${defCount}人`;
+        } else {
+            document.getElementById('panel-info').innerText = `地形: ${hex.terrain.name}${hex.terrain.icon} / 予想防衛兵力: 約${defCount}人`;
+        }
+        
         player.speedMultiplier = 1;
         updateUI();
         updateAttackButton();
@@ -301,7 +384,7 @@
 
     function closePanel() {
         document.getElementById('action-panel').style.display = 'none';
-        selectedTargetKey = null; // 選択解除
+        selectedTargetKey = null; 
     }
 
     function useSpeedItem() {
@@ -374,7 +457,7 @@
             timeLeft: finalTime
         });
 
-        logMsg(`${info.count}部隊を同時派遣！ ${info.turns}ターン(${finalTime}秒)後に決着します。`);
+        logMsg(`${info.count}部隊を同時派遣！ ${info.turns}ターン(${finalTime}秒)後に到達します。`);
         updateUI();
         closePanel();
     }
@@ -389,6 +472,13 @@
         document.getElementById('ui-count-bow').innerText = Math.floor(player.troops.bow);
         document.getElementById('ui-count-shield').innerText = Math.floor(player.troops.shield);
         document.getElementById('ui-count-cav').innerText = Math.floor(player.troops.cav);
+        
+        // もし洛陽パネルを開いていたらHP表示をリアルタイム更新
+        if (selectedTargetKey === "0,0,0") {
+            let luoyang = hexes.get("0,0,0");
+            let defCount = luoyang.defenders.spear + luoyang.defenders.bow + luoyang.defenders.shield + luoyang.defenders.cav;
+            document.getElementById('panel-info').innerHTML = `<strong style="color:#f1c40f;">【洛陽 城壁】 HP: ${Math.floor(luoyang.wallHP)} / ${luoyang.maxWallHP}</strong><br>予想防衛兵力: 約${defCount}人`;
+        }
     }
 
     function logMsg(text, color="#fff") {
@@ -408,7 +498,6 @@
         if(!gameActive) return;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         
-        // 1. 全てのマスを描画
         hexes.forEach(hex => {
             const pos = { x: HEX_SIZE * (Math.sqrt(3) * hex.q + Math.sqrt(3)/2 * hex.r) + canvas.width/2, y: HEX_SIZE * (3/2 * hex.r) + canvas.height/2 };
             ctx.beginPath();
@@ -422,7 +511,23 @@
             ctx.strokeStyle = "rgba(255,255,255,0.15)";
             ctx.stroke();
 
-            if(hex.terrain.icon) {
+            // ★洛陽の特別グラフィックとHPバー
+            if (hex.isLuoyang) {
+                ctx.font = "18px sans-serif";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.fillText("🏯", pos.x, pos.y - 5);
+                ctx.font = "10px sans-serif";
+                ctx.fillStyle = "#fff";
+                ctx.fillText("洛陽", pos.x, pos.y + 10);
+                
+                // HPバーの描画
+                let hpRatio = hex.wallHP / hex.maxWallHP;
+                ctx.fillStyle = "#c0392b"; // 背景赤
+                ctx.fillRect(pos.x - 15, pos.y + 16, 30, 4);
+                ctx.fillStyle = "#2ecc71"; // 残り緑
+                ctx.fillRect(pos.x - 15, pos.y + 16, 30 * hpRatio, 4);
+            } else if(hex.terrain.icon) {
                 ctx.font = "12px sans-serif";
                 ctx.textAlign = "center";
                 ctx.textBaseline = "middle";
@@ -430,7 +535,6 @@
             }
         });
 
-        // 2. 選択中のマスを点滅（フラッシュ）描画
         if (selectedTargetKey) {
             let hex = hexes.get(selectedTargetKey);
             if (hex) {
@@ -443,25 +547,26 @@
                 ctx.closePath();
 
                 ctx.save();
-                // 時間経過で0.2〜0.8のアルファ値(透明度)を往復させて点滅効果を作る
                 let flashAlpha = 0.2 + 0.6 * ((Math.sin(Date.now() / 150) + 1) / 2);
                 ctx.strokeStyle = TEAMS[player.teamId].color;
-                ctx.lineWidth = 4; // 枠線を太くする
+                ctx.lineWidth = 4;
                 ctx.globalAlpha = flashAlpha;
                 ctx.stroke();
                 ctx.restore();
             }
         }
 
-        // 3. 進軍中のマーカーを描画
         marches.forEach(m => {
+            let pos = { x: HEX_SIZE * (Math.sqrt(3) * hexes.get(m.targetKey).q + Math.sqrt(3)/2 * hexes.get(m.targetKey).r) + canvas.width/2, y: HEX_SIZE * (3/2 * hexes.get(m.targetKey).r) + canvas.height/2 };
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y - 10, 5, 0, Math.PI*2);
+            ctx.fillStyle = TEAMS[m.team].color;
             if(m.team === player.teamId) {
-                let pos = { x: HEX_SIZE * (Math.sqrt(3) * hexes.get(m.targetKey).q + Math.sqrt(3)/2 * hexes.get(m.targetKey).r) + canvas.width/2, y: HEX_SIZE * (3/2 * hexes.get(m.targetKey).r) + canvas.height/2 };
-                ctx.beginPath();
-                ctx.arc(pos.x, pos.y - 10, 5, 0, Math.PI*2);
-                ctx.fillStyle = "#f1c40f";
-                ctx.fill();
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = "#fff";
+                ctx.stroke();
             }
+            ctx.fill();
         });
 
         requestAnimationFrame(render);
