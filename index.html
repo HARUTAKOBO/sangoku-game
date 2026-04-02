@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>ヘックス陣取り大戦 - ターン制戦闘導入版</title>
+    <title>ヘックス陣取り大戦 - マス点滅・ターン制戦闘版</title>
     <style>
         html, body { background-color: #1e272e; color: #ecf0f1; font-family: sans-serif; margin: 0; padding: 0; height: 100vh; overflow: hidden; touch-action: none; overscroll-behavior: none; }
         
@@ -154,7 +154,7 @@
         gameActive = true;
         resize();
         requestAnimationFrame(render);
-        setInterval(gameTick, 1000); // 1秒 = 1ティック
+        setInterval(gameTick, 1000);
         logMsg(`武将${WARLORDS[type].name}として着任しました！`, "#f1c40f");
     }
 
@@ -278,7 +278,7 @@
             const canAttack = neighbors.some(nKey => hexes.get(nKey)?.team === player.teamId);
             
             if (canAttack) {
-                selectedTargetKey = key;
+                selectedTargetKey = key; // ここで選択中のマスを記憶
                 openPanel(target);
             }
         }
@@ -301,7 +301,7 @@
 
     function closePanel() {
         document.getElementById('action-panel').style.display = 'none';
-        selectedTargetKey = null;
+        selectedTargetKey = null; // 選択解除
     }
 
     function useSpeedItem() {
@@ -320,14 +320,12 @@
             player.troops.spear += bonus; player.troops.bow += bonus;
             player.troops.shield += bonus; player.troops.cav += bonus;
             updateUI();
-            updateAttackButton(); // 兵数が増えて部隊数判定が変わる可能性のため
+            updateAttackButton();
         }
     }
 
-    // ★今回のキモ：選択部隊数からターンと秒数を算出するロジック★
     function getActiveSquadInfo() {
         let count = 0;
-        // トグルがONになっていて、かつ兵力が1人以上いる兵種のみ「部隊」としてカウント
         if(selectedTroops.spear && player.troops.spear >= 1) count++;
         if(selectedTroops.bow && player.troops.bow >= 1) count++;
         if(selectedTroops.shield && player.troops.shield >= 1) count++;
@@ -351,14 +349,13 @@
         }
         
         document.querySelector('.btn-attack').style.opacity = "1";
-        // 加速券の計算
         let finalTime = Math.max(Math.floor(info.time / player.speedMultiplier), player.type === 'B' ? 5 : 10);
         document.querySelector('.btn-attack').innerText = `出陣(${info.count}部隊) ${info.turns}ターン / ${finalTime}秒 ${player.speedMultiplier > 1 ? '⚡':''}`;
     }
 
     function sendAttack() {
         let info = getActiveSquadInfo();
-        if (info.count === 0) return; // 0部隊なら不発
+        if (info.count === 0) return;
 
         let sent = { spear: 0, bow: 0, shield: 0, cav: 0 };
 
@@ -373,7 +370,7 @@
             team: player.teamId,
             targetKey: selectedTargetKey,
             troops: sent,
-            turns: info.turns, // ログ表示用に保存
+            turns: info.turns,
             timeLeft: finalTime
         });
 
@@ -411,6 +408,7 @@
         if(!gameActive) return;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         
+        // 1. 全てのマスを描画
         hexes.forEach(hex => {
             const pos = { x: HEX_SIZE * (Math.sqrt(3) * hex.q + Math.sqrt(3)/2 * hex.r) + canvas.width/2, y: HEX_SIZE * (3/2 * hex.r) + canvas.height/2 };
             ctx.beginPath();
@@ -432,6 +430,30 @@
             }
         });
 
+        // 2. 選択中のマスを点滅（フラッシュ）描画
+        if (selectedTargetKey) {
+            let hex = hexes.get(selectedTargetKey);
+            if (hex) {
+                const pos = { x: HEX_SIZE * (Math.sqrt(3) * hex.q + Math.sqrt(3)/2 * hex.r) + canvas.width/2, y: HEX_SIZE * (3/2 * hex.r) + canvas.height/2 };
+                ctx.beginPath();
+                for(let i=0; i<6; i++) {
+                    let angle = Math.PI/180 * (60*i - 30);
+                    ctx.lineTo(pos.x + HEX_SIZE*Math.cos(angle), pos.y + HEX_SIZE*Math.sin(angle));
+                }
+                ctx.closePath();
+
+                ctx.save();
+                // 時間経過で0.2〜0.8のアルファ値(透明度)を往復させて点滅効果を作る
+                let flashAlpha = 0.2 + 0.6 * ((Math.sin(Date.now() / 150) + 1) / 2);
+                ctx.strokeStyle = TEAMS[player.teamId].color;
+                ctx.lineWidth = 4; // 枠線を太くする
+                ctx.globalAlpha = flashAlpha;
+                ctx.stroke();
+                ctx.restore();
+            }
+        }
+
+        // 3. 進軍中のマーカーを描画
         marches.forEach(m => {
             if(m.team === player.teamId) {
                 let pos = { x: HEX_SIZE * (Math.sqrt(3) * hexes.get(m.targetKey).q + Math.sqrt(3)/2 * hexes.get(m.targetKey).r) + canvas.width/2, y: HEX_SIZE * (3/2 * hexes.get(m.targetKey).r) + canvas.height/2 };
